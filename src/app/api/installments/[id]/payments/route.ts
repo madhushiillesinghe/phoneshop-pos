@@ -3,8 +3,7 @@ import { prisma } from '@/src/lib/prisma';
 
 export async function POST(
     request: NextRequest,
-    { params }: { params: { id: string } }
-) {
+    { params }: { params: Promise<{ id: string }> }) {
     const installmentId = parseInt(params.id);
     const { amount, paymentMethod, paidDate } = await request.json();
 
