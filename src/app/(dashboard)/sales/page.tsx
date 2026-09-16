@@ -66,10 +66,13 @@ export default function SalesPage() {
     const [customerSearch, setCustomerSearch] = useState('');
 
     const [paymentMethod, setPaymentMethod] = useState<
-        'CASH' | 'CARD' | 'QR' | 'INSTALLMENT'
+        'CASH' | 'CARD' | 'QR' | 'SPLIT' | 'INSTALLMENT'
     >('CASH');
 
     const [cashReceived, setCashReceived] = useState('');
+
+    // Split payment: Cash + Card
+    const [cardReceived, setCardReceived] = useState('');
 
     const [loading, setLoading] = useState(false);
 
@@ -1277,6 +1280,8 @@ export default function SalesPage() {
             customer,
             cart,
             paymentMethod,
+            cashReceived,
+            cardReceived,
             globalDiscountType,
             globalDiscountValue,
             repairCharges,
@@ -1452,22 +1457,56 @@ export default function SalesPage() {
             }
 
             // ====================================================
-            // CASH
+            // CASH PAYMENT
             // ====================================================
 
-            if (
-                paymentMethod ===
-                'CASH' &&
-                cashReceived &&
-                parseFloat(
-                    cashReceived
-                ) < total
-            ) {
-                toast.error(
-                    'Cash received is less than total'
-                );
+            if (paymentMethod === 'CASH') {
+                const cash = parseFloat(cashReceived || '0');
 
-                return;
+                if (!Number.isFinite(cash) || cash < total) {
+                    toast.error(
+                        `Cash received must be at least LKR ${total.toFixed(2)}`
+                    );
+                    return;
+                }
+            }
+
+            // ====================================================
+            // CARD PAYMENT
+            // ====================================================
+
+            if (paymentMethod === 'CARD') {
+                const card = parseFloat(cardReceived || '0');
+
+                if (!Number.isFinite(card) || card < total) {
+                    toast.error(
+                        `Card payment must be at least LKR ${total.toFixed(2)}`
+                    );
+                    return;
+                }
+            }
+
+            // ====================================================
+            // SPLIT PAYMENT: CASH + CARD
+            // ====================================================
+
+            if (paymentMethod === 'SPLIT') {
+                const cash = parseFloat(cashReceived || '0');
+                const card = parseFloat(cardReceived || '0');
+                const paid = (Number.isFinite(cash) ? cash : 0) +
+                    (Number.isFinite(card) ? card : 0);
+
+                if (cash < 0 || card < 0) {
+                    toast.error('Payment amounts cannot be negative');
+                    return;
+                }
+
+                if (paid < total) {
+                    toast.error(
+                        `Split payment is short by LKR ${(total - paid).toFixed(2)}`
+                    );
+                    return;
+                }
             }
 
             // ====================================================
@@ -1557,23 +1596,32 @@ export default function SalesPage() {
 
                     paymentMethod,
 
+                    // Payment breakdown
                     cashReceived:
-                        paymentMethod ===
-                        'CASH'
-                            ? parseFloat(
-                                cashReceived ||
-                                '0'
-                            )
-                            : undefined,
+                        paymentMethod === 'CASH' || paymentMethod === 'SPLIT'
+                            ? parseFloat(cashReceived || '0')
+                            : 0,
+
+                    cardReceived:
+                        paymentMethod === 'CARD' || paymentMethod === 'SPLIT'
+                            ? parseFloat(cardReceived || '0')
+                            : 0,
+
+                    totalPaid:
+                        paymentMethod === 'CASH'
+                            ? parseFloat(cashReceived || '0')
+                            : paymentMethod === 'CARD'
+                                ? parseFloat(cardReceived || '0')
+                                : paymentMethod === 'SPLIT'
+                                    ? parseFloat(cashReceived || '0') + parseFloat(cardReceived || '0')
+                                    : undefined,
 
                     balance:
-                        paymentMethod ===
-                        'CASH' &&
-                        cashReceived
-                            ? parseFloat(
-                            cashReceived
-                        ) - total
-                            : undefined,
+                        paymentMethod === 'CASH'
+                            ? parseFloat(cashReceived || '0') - total
+                            : paymentMethod === 'SPLIT'
+                                ? parseFloat(cashReceived || '0') + parseFloat(cardReceived || '0') - total
+                                : undefined,
 
                     repairCharges,
 
@@ -1660,42 +1708,39 @@ export default function SalesPage() {
                 // =================================================
 
                 const receiptData = {
-                    invoiceNo:
-                    sale.invoiceNo,
+                    invoiceNo: sale.invoiceNo,
 
-                    date:
-                        new Date().toLocaleString(),
+                    date: new Date().toLocaleString(),
 
                     customer:
-                        customer?.name ||
-                        'Walk-in Customer',
+                        customer?.name || 'Walk-in Customer',
 
-                    cashier:
-                    userName,
+                    cashier: userName || 'Admin',
 
-                    items: cart.map(
-                        (item) => ({
-                            name:
-                            item.product
-                                .name,
+                    items: cart.map((item) => {
+                        const finalPrice = getItemPrice(item);
 
-                            quantity:
-                            item.quantity,
+                        const marketPrice =
+                            Number(item.product.sellingPrice) || 0;
 
-                            price:
-                                getItemPrice(
-                                    item
-                                ),
+                        return {
+                            name: item.product.name,
+                            quantity: item.quantity,
 
-                            discount:
-                                getItemDiscount(
-                                    item
-                                ),
-                        })
-                    ),
+                            // Customer's actual price
+                            price: finalPrice,
 
-                    subtotal:
-                    originalSubtotal,
+                            // Original selling price = Market Price
+                            marketPrice: marketPrice,
+
+                            discount: Math.max(
+                                0,
+                                marketPrice - finalPrice
+                            ),
+                        };
+                    }),
+
+                    subtotal: originalSubtotal,
 
                     discountTotal:
                         itemDiscountTotal +
@@ -1705,10 +1750,55 @@ export default function SalesPage() {
 
                     repairCharges,
 
-                    total,
+                    total: total,
 
-                    requiresApproval:
-                    needsApproval,
+                    paymentMethod: paymentMethod,
+
+                    // ==========================================
+                    // PAYMENT VALUES
+                    // ==========================================
+
+                    cashAmount:
+                        paymentMethod === 'CASH' ||
+                        paymentMethod === 'SPLIT'
+                            ? Number(cashReceived || 0)
+                            : 0,
+
+                    cardAmount:
+                        paymentMethod === 'CARD' ||
+                        paymentMethod === 'SPLIT'
+                            ? Number(cardReceived || 0)
+                            : 0,
+
+                    // Total money received
+                    tendered:
+                        paymentMethod === 'CASH'
+                            ? Number(cashReceived || 0)
+                            : paymentMethod === 'CARD'
+                                ? Number(cardReceived || 0)
+                                : paymentMethod === 'SPLIT'
+                                    ? Number(cashReceived || 0) +
+                                    Number(cardReceived || 0)
+                                    : 0,
+
+                    // Change
+                    balance:
+                        paymentMethod === 'CASH'
+                            ? Math.max(
+                                0,
+                                Number(cashReceived || 0) - total
+                            )
+                            : paymentMethod === 'SPLIT'
+                                ? Math.max(
+                                    0,
+                                    (
+                                        Number(cashReceived || 0) +
+                                        Number(cardReceived || 0)
+                                    ) - total
+                                )
+                                : 0,
+
+                    requiresApproval: needsApproval,
 
                     approvedBy:
                         needsApproval
@@ -1717,7 +1807,6 @@ export default function SalesPage() {
                                 : null
                             : null,
                 };
-
                 sessionStorage.setItem(
                     'receipt',
                     JSON.stringify(
@@ -1743,6 +1832,7 @@ export default function SalesPage() {
                 );
 
                 setCashReceived('');
+                setCardReceived('');
 
                 setCustomer(null);
 
@@ -1862,6 +1952,122 @@ export default function SalesPage() {
         };
 
     // ============================================================
+    // BARCODE SCANNER
+    //
+    // USB/Bluetooth barcode scanners normally behave like a keyboard.
+    // They type the barcode into the focused input and send ENTER.
+    //
+    // Flow:
+    // Scanner -> searchQuery -> exact barcode/IMEI/serial match
+    // -> addToCart() -> search box cleared -> focus returns to scanner
+    // ============================================================
+
+    const handleBarcodeScan = (value: string) => {
+        const scannedCode = String(value || '').trim();
+
+        if (!scannedCode) {
+            return;
+        }
+
+        console.log('SCANNED CODE:', scannedCode);
+
+        // --------------------------------------------------------
+        // Exact match first: barcode, IMEI, serial number
+        // --------------------------------------------------------
+        const normalizedCode = scannedCode.toLowerCase();
+
+        const match = products.find((p) => {
+            const barcode = String(p.barcode || '').trim().toLowerCase();
+            const imei = String(p.imei || '').trim().toLowerCase();
+            const serial = String(p.serialNumber || '').trim().toLowerCase();
+
+            return (
+                barcode === normalizedCode ||
+                imei === normalizedCode ||
+                serial === normalizedCode
+            );
+        });
+
+        if (match) {
+            console.log('SCANNER PRODUCT FOUND:', match);
+
+            // addToCart already checks stock and increments quantity
+            // when the same product is scanned again.
+            addToCart(match);
+
+            toast.success(`Added: ${match.name}`);
+
+            // addToCart clears the input, but explicitly clear it here
+            // too so the scanner is immediately ready for the next scan.
+            setSearchQuery('');
+            setFilteredProducts([]);
+
+            setTimeout(() => {
+                inputRef.current?.focus();
+            }, 50);
+
+            return;
+        }
+
+        // --------------------------------------------------------
+        // Barcode/IMEI/serial not found
+        // --------------------------------------------------------
+        toast.error(`Product not found: ${scannedCode}`);
+
+        setSearchQuery('');
+        setFilteredProducts([]);
+
+        setTimeout(() => {
+            inputRef.current?.focus();
+        }, 50);
+    };
+
+
+    // ============================================================
+    // KEEP SCANNER INPUT FOCUSED
+    //
+    // This makes the POS ready to scan without clicking the box
+    // every time. We do NOT steal focus while the user is typing
+    // inside another input/textarea/select/button.
+    // ============================================================
+
+    useEffect(() => {
+        const focusScanner = () => {
+            const active = document.activeElement as HTMLElement | null;
+
+            if (!active) {
+                inputRef.current?.focus();
+                return;
+            }
+
+            const tag = active.tagName.toLowerCase();
+
+            const isTypingField =
+                tag === 'input' ||
+                tag === 'textarea' ||
+                tag === 'select' ||
+                tag === 'button' ||
+                active.isContentEditable;
+
+            if (!isTypingField) {
+                inputRef.current?.focus();
+            }
+        };
+
+        // Focus when Sales page opens.
+        inputRef.current?.focus();
+
+        // If the cashier clicks an empty page area, return focus
+        // to the scanner input. Other form controls keep their focus.
+        window.addEventListener('click', focusScanner);
+
+        return () => {
+            window.removeEventListener('click', focusScanner);
+        };
+    }, []);
+
+
+    // ============================================================
     // FIRST PRODUCT
     // ============================================================
 
@@ -1941,6 +2147,10 @@ export default function SalesPage() {
                             ref={inputRef}
                             type="text"
                             placeholder="Scan barcode, IMEI, serial or search product..."
+                            autoComplete="off"
+                            autoCorrect="off"
+                            autoCapitalize="off"
+                            spellCheck={false}
                             className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
                             value={searchQuery}
                             onChange={(e) =>
@@ -1949,53 +2159,28 @@ export default function SalesPage() {
                                 )
                             }
                             onKeyDown={(e) => {
-                                if (
-                                    e.key ===
-                                    'Enter' &&
-                                    searchQuery.trim()
-                                ) {
-                                    const search =
-                                        searchQuery.trim();
-
-                                    const match =
-                                        products.find(
-                                            (p) =>
-                                                p.barcode ===
-                                                search ||
-                                                p.imei ===
-                                                search ||
-                                                p.serialNumber ===
-                                                search
-                                        );
-
-                                    if (match) {
-                                        addToCart(
-                                            match
-                                        );
-                                    } else {
-                                        const filtered =
-                                            products.filter(
-                                                (p) =>
-                                                    p.name
-                                                        .toLowerCase()
-                                                        .includes(
-                                                            search.toLowerCase()
-                                                        )
-                                            );
-
-                                        if (
-                                            filtered.length ===
-                                            1
-                                        ) {
-                                            addToCart(
-                                                filtered[0]
-                                            );
-                                        }
-                                    }
+                                if (e.key !== 'Enter') {
+                                    return;
                                 }
+
+                                e.preventDefault();
+
+                                const value = searchQuery.trim();
+
+                                if (!value) {
+                                    return;
+                                }
+
+                                // Enter from a barcode scanner reaches here.
+                                // Exact barcode/IMEI/serial is handled first.
+                                handleBarcodeScan(value);
                             }}
                         />
 
+                    </div>
+
+                    <div className="mt-2 text-xs text-gray-500">
+                        Barcode scanner ready — scan the sticker barcode and press Enter if your scanner does not send Enter automatically.
                     </div>
 
                     {/* SEARCH RESULTS */}
@@ -2921,6 +3106,7 @@ export default function SalesPage() {
                                     | 'CASH'
                                     | 'CARD'
                                     | 'QR'
+                                    | 'SPLIT'
                                     | 'INSTALLMENT'
                             )
                         }
@@ -2939,6 +3125,10 @@ export default function SalesPage() {
                             QR
                         </option>
 
+                        <option value="SPLIT">
+                            Split (Cash + Card)
+                        </option>
+
                         <option value="INSTALLMENT">
                             Installment
                         </option>
@@ -2947,57 +3137,121 @@ export default function SalesPage() {
 
                     {/* CASH */}
 
-                    {paymentMethod ===
-                        'CASH' && (
+                    {paymentMethod === 'CASH' && (
+                        <div className="space-y-2">
+                            <label className="block text-sm font-medium">
+                                Cash Received
+                            </label>
+
+                            <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                value={cashReceived}
+                                onChange={(e) => setCashReceived(e.target.value)}
+                                className="w-full border border-gray-300 rounded-md p-2"
+                                placeholder="Enter cash amount"
+                            />
+
+                            {cashReceived !== '' && (
+                                <div className="text-sm text-gray-600">
+                                    Change:
+                                    <span className="font-semibold ml-1 text-green-600">
+                                        LKR {Math.max(0, parseFloat(cashReceived || '0') - total).toFixed(2)}
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* CARD */}
+
+                    {paymentMethod === 'CARD' && (
+                        <div className="space-y-2">
+                            <label className="block text-sm font-medium">
+                                Card Payment
+                            </label>
+
+                            <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                value={cardReceived}
+                                onChange={(e) => setCardReceived(e.target.value)}
+                                className="w-full border border-gray-300 rounded-md p-2"
+                                placeholder="Enter card amount"
+                            />
+                        </div>
+                    )}
+
+                    {/* SPLIT PAYMENT */}
+
+                    {paymentMethod === 'SPLIT' && (
+                        <div className="mt-2 p-3 border border-blue-200 bg-blue-50 rounded-md space-y-3">
+                            <div className="text-sm font-semibold text-blue-800">
+                                Split Payment — Cash + Card
+                            </div>
+
                             <div>
-
-                                <label className="block text-sm font-medium">
-                                    Cash Received
+                                <label className="block text-xs font-medium text-gray-700 mb-1">
+                                    Cash Payment (LKR)
                                 </label>
-
                                 <input
                                     type="number"
                                     min="0"
-                                    value={
-                                        cashReceived
-                                    }
-                                    onChange={(
-                                        e
-                                    ) =>
-                                        setCashReceived(
-                                            e.target
-                                                .value
-                                        )
-                                    }
-                                    className="w-full border border-gray-300 rounded-md p-2"
-                                    placeholder="Enter amount"
+                                    step="0.01"
+                                    inputMode="decimal"
+                                    value={cashReceived}
+                                    onChange={(e) => setCashReceived(e.target.value)}
+                                    className="w-full border border-gray-300 rounded-md p-2 bg-white"
+                                    placeholder="e.g. 500.00"
                                 />
-
-                                {cashReceived &&
-                                    parseFloat(
-                                        cashReceived
-                                    ) > 0 && (
-                                        <div className="text-sm text-gray-600 mt-1">
-
-                                            Change:
-
-                                            <span className="font-semibold ml-1">
-                                            LKR{' '}
-                                                {(
-                                                    parseFloat(
-                                                        cashReceived
-                                                    ) -
-                                                    total
-                                                ).toFixed(
-                                                    2
-                                                )}
-                                        </span>
-
-                                        </div>
-                                    )}
-
                             </div>
-                        )}
+
+                            <div>
+                                <label className="block text-xs font-medium text-gray-700 mb-1">
+                                    Card Payment (LKR)
+                                </label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    inputMode="decimal"
+                                    value={cardReceived}
+                                    onChange={(e) => setCardReceived(e.target.value)}
+                                    className="w-full border border-gray-300 rounded-md p-2 bg-white"
+                                    placeholder="e.g. 1000.00"
+                                />
+                            </div>
+
+                            <div className="border-t border-blue-200 pt-2 space-y-1 text-sm">
+                                <div className="flex justify-between">
+                                    <span>Bill Total</span>
+                                    <span className="font-semibold">LKR {total.toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Cash</span>
+                                    <span>LKR {parseFloat(cashReceived || '0').toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>Card</span>
+                                    <span>LKR {parseFloat(cardReceived || '0').toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between font-semibold">
+                                    <span>Total Paid</span>
+                                    <span>LKR {(parseFloat(cashReceived || '0') + parseFloat(cardReceived || '0')).toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span>{(parseFloat(cashReceived || '0') + parseFloat(cardReceived || '0')) >= total ? 'Change' : 'Remaining'}</span>
+                                    <span className={(parseFloat(cashReceived || '0') + parseFloat(cardReceived || '0')) >= total ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
+                                        LKR {Math.abs(total - (parseFloat(cashReceived || '0') + parseFloat(cardReceived || '0'))).toFixed(2)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* INSTALLMENT */}
 

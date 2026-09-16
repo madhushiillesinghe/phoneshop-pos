@@ -48,31 +48,43 @@ model Category {
 }
 
 model Product {
-  id             Int      @id @default(autoincrement())
-  barcode        String?  @unique
-  imei           String?  @unique
-  serialNumber   String?  @unique
-  name           String
-  brandId        Int?
-  categoryId     Int?
-  storage        String?
-  ram            String?
-  color          String?
-  purchasePrice  Float
-  sellingPrice   Float
-  discountPrice  Float?
-  tax            Float    @default(0)
-  stock          Int      @default(0)
-  reorderLevel   Int      @default(5)
-  warrantyMonths Int      @default(12)
-  description    String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id Int @id @default(autoincrement())
+
+  barcode     String? @unique
+  productCode String? @unique
+
+  imei         String? @unique
+  serialNumber String? @unique
+
+  name  String
+  model String?
+
+  brandId    Int?
+  categoryId Int?
+
+  storage String?
+  ram     String?
+  color   String?
+
+  purchasePrice Float
+  sellingPrice  Float
+  discountPrice Float?
+
+  tax Float @default(0)
+
+  stock        Int @default(0)
+  reorderLevel Int @default(5)
+
+  warrantyMonths Int @default(12)
+
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   brand     Brand?     @relation(fields: [brandId], references: [id])
   category  Category?  @relation(fields: [categoryId], references: [id])
   saleItems SaleItem[]
-  // Repair    Repair[]
   Repair    Repair[]
 }
 
@@ -105,19 +117,24 @@ model Customer {
 }
 
 model Sale {
-  id            Int           @id @default(autoincrement())
-  invoiceNo     String        @unique
-  customerId    Int?
-  cashierId     Int
-  saleDate      DateTime      @default(now())
-  subtotal      Float
-  discount      Float         @default(0)
-  tax           Float         @default(0)
-  grandTotal    Float
+  id         Int      @id @default(autoincrement())
+  invoiceNo  String   @unique
+  customerId Int?
+  cashierId  Int
+  saleDate   DateTime @default(now())
+
+  subtotal   Float
+  discount   Float @default(0)
+  tax        Float @default(0)
+  grandTotal Float
+
   paymentMethod PaymentMethod
-  cashReceived  Float?
-  balance       Float?
-  status        SaleStatus    @default(PAID)
+
+  cashReceived Float?
+  cardReceived Float?
+  balance      Float?
+
+  status SaleStatus @default(PAID)
 
   customer Customer? @relation(fields: [customerId], references: [id])
   cashier  User      @relation(fields: [cashierId], references: [id])
@@ -132,6 +149,7 @@ enum PaymentMethod {
   QR
   BANK
   INSTALLMENT
+  SPLIT
 }
 
 enum SaleStatus {

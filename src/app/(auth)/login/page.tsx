@@ -51,13 +51,20 @@ export default function LoginPage() {
             <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8 space-y-6">
                 {/* Brand / Logo */}
                 <div className="text-center">
-                    <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-full mb-3">
-                        <LogIn className="w-8 h-8 text-white" />
-                    </div>
-                    <h1 className="text-3xl font-bold text-gray-800">PhonePOS</h1>
-                    <p className="text-gray-500 text-sm mt-1">Point of Sale System</p>
-                </div>
+                    <img
+                        src="/login-logo.png"
+                        alt="PhonePOS Logo"
+                        className="w-28 h-28 mx-auto mb-3 object-contain"
+                    />
 
+                    <h1 className="text-3xl font-bold text-gray-800">
+                        PhonePOS
+                    </h1>
+
+                    <p className="text-gray-500 text-sm mt-1">
+                        Point of Sale System
+                    </p>
+                </div>
                 {/* Error Message */}
                 {error && (
                     <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm">

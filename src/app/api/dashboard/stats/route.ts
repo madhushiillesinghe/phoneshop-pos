@@ -1,86 +1,186 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/src/lib/prisma';
-import { format, startOfMonth, endOfMonth, subMonths, differenceInDays, startOfDay, endOfDay } from 'date-fns';
+// src/app/api/dashboard/stats/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/src/lib/prisma";
+import {
+    startOfDay,
+    endOfDay,
+    startOfMonth,
+    endOfMonth,
+    subMonths,
+} from "date-fns";
+
+const n = (value: unknown) => Number(value ?? 0);
+
+function getCategoryType(name?: string | null) {
+    const x = (name ?? "").trim().toLowerCase();
+
+    // Accessories first so products such as "Phone Case" are not
+    // incorrectly counted as Smart Devices.
+    if (
+        /accessor|charger|cable|cover|case|tempered|earphone|headphone|power bank|adapter|holder|airpods|screen protector/.test(
+            x
+        )
+    ) {
+        return "accessories" as const;
+    }
+
+    // Smart Device = Phone + Tablet.
+    if (/tablet|ipad|tab\b/.test(x)) {
+        return "smartDevice" as const;
+    }
+
+    if (
+        /phone|mobile|iphone|samsung|xiaomi|oppo|vivo|realme|oneplus|pixel|nokia|huawei/.test(
+            x
+        )
+    ) {
+        return "smartDevice" as const;
+    }
+
+    // A category explicitly called Smart Device is also included.
+    if (/smart[\s-]*device|smart[\s-]*watch|wearable|apple watch|galaxy watch|watch/.test(x)) {
+        return "smartDevice" as const;
+    }
+
+    return "other" as const;
+}
 
 export async function GET(request: NextRequest) {
     try {
-        const searchParams = request.nextUrl.searchParams;
-        const from = searchParams.get('from');
-        const to = searchParams.get('to');
+        const params = request.nextUrl.searchParams;
+        const fromParam = params.get("from");
+        const toParam = params.get("to");
 
-        let startDate = from ? new Date(from) : startOfMonth(new Date());
-        let endDate = to ? new Date(to) : endOfMonth(new Date());
-        endDate.setHours(23, 59, 59, 999);
+        const now = new Date();
 
-        // ===== 1. TOP SELLING PRODUCTS (≥10 items) =====
-        const topSellingProducts = await prisma.$queryRaw`
-            SELECT
-                p.id,
-                p.name,
-                p.stock AS currentStock,
-                p.reorderLevel,
-                COALESCE(SUM(si.quantity), 0) AS totalSold,
-                COALESCE(SUM(si.quantity * si.price), 0) AS totalRevenue,
-                COUNT(DISTINCT si.saleId) AS numberOfSales,
-                AVG(si.price) AS averagePrice
-            FROM Product p
-            LEFT JOIN SaleItem si ON p.id = si.productId
-            LEFT JOIN Sale s ON si.saleId = s.id AND s.status = 'PAID'
-                AND s.saleDate BETWEEN ${startDate} AND ${endDate}
-            GROUP BY p.id, p.name, p.stock, p.reorderLevel
-            HAVING COALESCE(SUM(si.quantity), 0) >= 10
-            ORDER BY totalSold DESC
-            LIMIT 10
-        `;
+        const startDate = fromParam
+            ? new Date(`${fromParam}T00:00:00`)
+            : startOfMonth(now);
 
-        // ===== 2. SLOW SELLING PRODUCTS (<3 items) =====
-        const slowSellingProducts = await prisma.$queryRaw`
-            SELECT
-                p.id,
-                p.name,
-                p.stock AS currentStock,
-                p.reorderLevel,
-                COALESCE(SUM(si.quantity), 0) AS totalSold,
-                COALESCE(SUM(si.quantity * si.price), 0) AS totalRevenue,
-                COUNT(DISTINCT si.saleId) AS numberOfSales
-            FROM Product p
-                     LEFT JOIN SaleItem si ON p.id = si.productId
-                     LEFT JOIN Sale s ON si.saleId = s.id AND s.status = 'PAID'
-                AND s.saleDate BETWEEN ${startDate} AND ${endDate}
-            GROUP BY p.id, p.name, p.stock, p.reorderLevel
-            HAVING COALESCE(SUM(si.quantity), 0) < 3
-               AND p.stock > 0
-            ORDER BY totalSold ASC
-                LIMIT 10
-        `;
+        const endDate = toParam
+            ? new Date(`${toParam}T23:59:59.999`)
+            : endOfMonth(now);
 
-        // ===== 3. ZERO SALES PRODUCTS (Never Sold) =====
-        const zeroSalesProducts = await prisma.$queryRaw`
-            SELECT
-                p.id,
-                p.name,
-                p.stock AS currentStock,
-                p.reorderLevel,
-                0 AS totalSold,
-                0 AS totalRevenue,
-                0 AS numberOfSales
-            FROM Product p
-                     LEFT JOIN SaleItem si ON p.id = si.productId
-                     LEFT JOIN Sale s ON si.saleId = s.id AND s.status = 'PAID'
-            WHERE si.id IS NULL
-              AND p.stock > 0
-            ORDER BY p.stock DESC
-                LIMIT 10
-        `;
+        if (
+            Number.isNaN(startDate.getTime()) ||
+            Number.isNaN(endDate.getTime()) ||
+            startDate > endDate
+        ) {
+            return NextResponse.json(
+                { success: false, message: "Invalid date range." },
+                { status: 400 }
+            );
+        }
 
-        // ===== 4. LOW STOCK ITEMS (Less than 5 items in stock) =====
-        const lowStockItems = await prisma.product.findMany({
+        // All chart sales use the selected date range.
+        const sales = await prisma.sale.findMany({
             where: {
-                OR: [
-                    { stock: 0 },
-                    { stock: { lt: 10 } },  // Less than 5 items in stock
-                ],
+                saleDate: { gte: startDate, lte: endDate },
+                status: "PAID",
             },
+            include: {
+                saleItems: {
+                    include: {
+                        product: {
+                            include: {
+                                category: true,
+                                brand: true,
+                            },
+                        },
+                    },
+                },
+            },
+            orderBy: { saleDate: "desc" },
+        });
+
+        const totalSales = sales.reduce(
+            (sum, sale) => sum + n(sale.grandTotal),
+            0
+        );
+
+        const totalDiscount = sales.reduce(
+            (sum, sale) => sum + n(sale.discount),
+            0
+        );
+
+        const paymentMethods = {
+            CASH: 0,
+            CARD: 0,
+            INSTALLMENT: 0,
+        };
+
+        // Only two dashboard categories are returned:
+        // Smart Device = Phone + Tablet, and Accessories.
+        const categorySales = {
+            smartDevice: 0,
+            accessories: 0,
+        };
+
+        const productMap = new Map<number, any>();
+
+        for (const sale of sales) {
+            // Your Prisma enum is CASH/CARD/QR/BANK/INSTALLMENT.
+            // SPLIT is intentionally ignored here because it is not a valid enum value.
+            const method = String(sale.paymentMethod);
+
+            if (method === "CASH") {
+                paymentMethods.CASH += n(sale.grandTotal);
+            } else if (method === "CARD") {
+                paymentMethods.CARD += n(sale.grandTotal);
+            } else if (method === "INSTALLMENT") {
+                paymentMethods.INSTALLMENT += n(sale.grandTotal);
+            }
+
+            for (const item of sale.saleItems) {
+                const quantity = n(item.quantity);
+                const amount = n(item.price) * quantity;
+                const category = getCategoryType(item.product.category?.name);
+
+                if (category === "smartDevice") {
+                    categorySales.smartDevice += amount;
+                } else if (category === "accessories") {
+                    categorySales.accessories += amount;
+                }
+
+                const product = item.product;
+                const existing = productMap.get(product.id);
+
+                if (existing) {
+                    existing.totalSold += quantity;
+                    existing.totalRevenue += amount;
+                    existing.numberOfSales += 1;
+                } else {
+                    productMap.set(product.id, {
+                        id: product.id,
+                        name: product.name,
+                        category:
+                            product.category?.name || "Uncategorized",
+                        brand: product.brand?.name || "-",
+                        totalSold: quantity,
+                        totalRevenue: amount,
+                        currentStock: product.stock,
+                        reorderLevel: product.reorderLevel,
+                        numberOfSales: 1,
+                    });
+                }
+            }
+        }
+
+        const allProducts = [...productMap.values()];
+
+        const topSellingProducts = [...allProducts]
+            .filter((p) => p.totalSold >= 3)
+            .sort((a, b) => b.totalSold - a.totalSold)
+            .slice(0, 10);
+
+        // Slow selling = products sold less than 3 units in selected date range.
+        const slowSellingProducts = [...allProducts]
+            .filter((p) => p.totalSold < 3)
+            .sort((a, b) => a.totalSold - b.totalSold)
+            .slice(0, 10);
+
+        // Low-stock data is current inventory, not limited by sales date.
+        const products = await prisma.product.findMany({
             select: {
                 id: true,
                 name: true,
@@ -89,36 +189,41 @@ export async function GET(request: NextRequest) {
                 sellingPrice: true,
                 purchasePrice: true,
                 createdAt: true,
+                category: { select: { name: true } },
+                brand: { select: { name: true } },
             },
-            orderBy: { stock: 'asc' },
+            orderBy: { stock: "asc" },
         });
 
-        // ===== 5. TODAY'S DATA =====
+        const lowStockItems = products
+            .filter((p) => p.stock <= (p.reorderLevel ?? 5))
+            .map((p) => ({
+                id: p.id,
+                name: p.name,
+                brand: p.brand?.name || "-",
+                category: p.category?.name || "Uncategorized",
+                stock: p.stock,
+                reorderLevel: p.reorderLevel ?? 5,
+                sellingPrice: n(p.sellingPrice),
+                purchasePrice: n(p.purchasePrice),
+                status:
+                    p.stock <= 0
+                        ? "Out of Stock"
+                        : p.stock <= 2
+                            ? "Critical"
+                            : "Low Stock",
+            }));
+
+        // Today's cards intentionally mean TODAY, independent of the selected chart filter.
         const today = new Date();
-        const todayStart = startOfDay(today);
-        const todayEnd = endOfDay(today);
 
-        const todaySalesAgg = await prisma.sale.aggregate({
+        const todayRows = await prisma.sale.findMany({
             where: {
-                saleDate: { gte: todayStart, lte: todayEnd },
-                status: 'PAID',
-            },
-            _sum: { grandTotal: true },
-        });
-        const todaySales = todaySalesAgg._sum.grandTotal || 0;
-
-        const todayOrders = await prisma.sale.count({
-            where: {
-                saleDate: { gte: todayStart, lte: todayEnd },
-                status: 'PAID',
-            },
-        });
-
-        // Today's Profit
-        const todaySalesWithItems = await prisma.sale.findMany({
-            where: {
-                saleDate: { gte: todayStart, lte: todayEnd },
-                status: 'PAID',
+                saleDate: {
+                    gte: startOfDay(today),
+                    lte: endOfDay(today),
+                },
+                status: "PAID",
             },
             include: {
                 saleItems: {
@@ -129,189 +234,145 @@ export async function GET(request: NextRequest) {
             },
         });
 
+        const todaySales = todayRows.reduce(
+            (sum, sale) => sum + n(sale.grandTotal),
+            0
+        );
+
+        const todayOrders = todayRows.length;
+
         let todayProfit = 0;
-        todaySalesWithItems.forEach((sale) => {
-            sale.saleItems.forEach((item) => {
-                const profit = (item.price - item.product.purchasePrice) * item.quantity;
-                todayProfit += profit;
-            });
-        });
-
-        // ===== 6. MONTHLY SALES =====
-        const monthStart = startOfMonth(new Date());
-        const monthEnd = endOfMonth(new Date());
-        const monthlySalesAgg = await prisma.sale.aggregate({
-            where: { saleDate: { gte: monthStart, lte: monthEnd }, status: 'PAID' },
-            _sum: { grandTotal: true },
-        });
-        const monthlySales = monthlySalesAgg._sum.grandTotal || 0;
-
-        const prevMonthStart = startOfMonth(subMonths(new Date(), 1));
-        const prevMonthEnd = endOfMonth(subMonths(new Date(), 1));
-        const prevMonthlySalesAgg = await prisma.sale.aggregate({
-            where: { saleDate: { gte: prevMonthStart, lte: prevMonthEnd }, status: 'PAID' },
-            _sum: { grandTotal: true },
-        });
-        const prevMonthlySales = prevMonthlySalesAgg._sum.grandTotal || 0;
-        const percentChange = prevMonthlySales > 0 ? ((monthlySales - prevMonthlySales) / prevMonthlySales) * 100 : 0;
-
-        // ===== 7. TOTAL STOCK ITEMS =====
-        const totalStockItems = await prisma.product.count();
-
-        // ===== 8. OTHER DATA =====
-        const totalCustomers = await prisma.customer.count();
-        const totalOrders = await prisma.sale.count({
-            where: { status: 'PAID' },
-        });
-
-        // Fetch sales for raw data
-        const sales = await prisma.sale.findMany({
-            where: {
-                saleDate: { gte: startDate, lte: endDate },
-                status: 'PAID',
-            },
-            include: {
-                saleItems: {
-                    include: {
-                        product: {
-                            include: { category: true },
-                        },
-                    },
-                },
-            },
-        });
-
-        const rawSales = sales.map((s) => ({
-            id: s.id,
-            saleDate: s.saleDate,
-            grandTotal: s.grandTotal,
-            paymentMethod: s.paymentMethod,
-            category: s.saleItems[0]?.product?.category?.name || 'Uncategorized',
-        }));
-
-        // ===== 9. PAYMENT METHODS (FIXED) =====
-        // Get payment method data from sales
-        const paymentMethods: Record<string, number> = {};
-        sales.forEach((s) => {
-            if (s.paymentMethod) {
-                paymentMethods[s.paymentMethod] = (paymentMethods[s.paymentMethod] || 0) + s.grandTotal;
+        for (const sale of todayRows) {
+            for (const item of sale.saleItems) {
+                todayProfit +=
+                    (n(item.price) - n(item.product.purchasePrice)) *
+                    n(item.quantity);
             }
-        });
-
-        // If no data, add sample data for testing
-        if (Object.keys(paymentMethods).length === 0) {
-            paymentMethods['CASH'] = 0;
-            paymentMethods['CARD'] = 0;
-            paymentMethods['QR'] = 0;
-            paymentMethods['BANK'] = 0;
-            paymentMethods['INSTALLMENT'] = 0;
         }
 
-        // Convert to array for frontend
-        const paymentMethodsArray = Object.entries(paymentMethods).map(([name, value]) => ({
-            name: name,
-            value: value,
-        }));
-
-        // ===== 10. PENDING REPAIRS =====
-        const pendingRepairs = await prisma.repair.groupBy({
-            by: ['status'],
+        const monthRows = await prisma.sale.findMany({
             where: {
-                status: {
-                    in: ['PENDING', 'IN_PROGRESS'],
+                saleDate: {
+                    gte: startOfMonth(today),
+                    lte: endOfMonth(today),
                 },
+                status: "PAID",
             },
-            _count: {
-                status: true,
-            },
+            select: { grandTotal: true },
         });
 
-        const repairData = pendingRepairs.map((item) => ({
-            status: item.status,
-            count: item._count.status,
-        }));
+        const monthlySales = monthRows.reduce(
+            (sum, sale) => sum + n(sale.grandTotal),
+            0
+        );
 
-        if (repairData.length === 0) {
-            repairData.push(
-                { status: 'PENDING', count: 0 },
-                { status: 'IN_PROGRESS', count: 0 }
-            );
+        const previousMonth = subMonths(today, 1);
+
+        const previousMonthRows = await prisma.sale.findMany({
+            where: {
+                saleDate: {
+                    gte: startOfMonth(previousMonth),
+                    lte: endOfMonth(previousMonth),
+                },
+                status: "PAID",
+            },
+            select: { grandTotal: true },
+        });
+
+        const previousMonthlySales = previousMonthRows.reduce(
+            (sum, sale) => sum + n(sale.grandTotal),
+            0
+        );
+
+        const percentChange =
+            previousMonthlySales > 0
+                ? ((monthlySales - previousMonthlySales) /
+                    previousMonthlySales) *
+                100
+                : 0;
+
+        const repairGroups = await prisma.repair.groupBy({
+            by: ["status"],
+            _count: { _all: true },
+        });
+
+        const repairs = {
+            pending: 0,
+            inProgress: 0,
+            completed: 0,
+        };
+
+        for (const row of repairGroups) {
+            if (row.status === "PENDING") repairs.pending = row._count._all;
+            if (row.status === "IN_PROGRESS")
+                repairs.inProgress = row._count._all;
+            if (row.status === "COMPLETED")
+                repairs.completed = row._count._all;
         }
 
-        // ===== RESPONSE =====
+        const totalCustomers = await prisma.customer.count();
+
+        const totalOrders = await prisma.sale.count({
+            where: { status: "PAID" },
+        });
+
+        const pendingInstallments = await prisma.installment.count({
+            where: { status: "ACTIVE" },
+        });
+
+        // Used by the frontend for the selected date-range sales trend.
+        const rawSales = sales.map((sale) => ({
+            id: sale.id,
+            saleDate: sale.saleDate.toISOString(),
+            grandTotal: n(sale.grandTotal),
+            paymentMethod: String(sale.paymentMethod),
+            category:
+                sale.saleItems[0]?.product.category?.name ||
+                "Uncategorized",
+        }));
+
         return NextResponse.json({
-            // Top Selling (≥10 items)
-            topSellingProducts: topSellingProducts.map((p: any) => ({
-                id: p.id,
-                name: p.name,
-                totalSold: Number(p.totalSold),
-                totalRevenue: Number(p.totalRevenue),
-                currentStock: Number(p.currentStock),
-                numberOfSales: Number(p.numberOfSales),
-                averagePrice: Number(p.averagePrice),
-                reorderLevel: Number(p.reorderLevel),
-            })),
+            success: true,
 
-            // Slow Selling (<3 items)
-            slowSellingProducts: slowSellingProducts.map((p: any) => ({
-                id: p.id,
-                name: p.name,
-                totalSold: Number(p.totalSold),
-                totalRevenue: Number(p.totalRevenue),
-                currentStock: Number(p.currentStock),
-                numberOfSales: Number(p.numberOfSales),
-                reorderLevel: Number(p.reorderLevel),
-            })),
+            summary: {
+                totalSales,
+                totalDiscount,
+                totalTransactions: sales.length,
+                averageSale:
+                    sales.length > 0 ? totalSales / sales.length : 0,
+            },
 
-            // Zero Sales Products
-            zeroSalesProducts: zeroSalesProducts.map((p: any) => ({
-                id: p.id,
-                name: p.name,
-                totalSold: Number(p.totalSold),
-                totalRevenue: Number(p.totalRevenue),
-                currentStock: Number(p.currentStock),
-                numberOfSales: Number(p.numberOfSales),
-                reorderLevel: Number(p.reorderLevel),
-            })),
+            paymentMethods,
+            categorySales,
+            repairs,
+            lowStockItems,
+            topSellingProducts,
+            slowSellingProducts,
+            rawSales,
 
-            // Low Stock Items (<5 items)
-            lowStockItems: lowStockItems.map((p) => ({
-                id: p.id,
-                name: p.name,
-                stock: p.stock,
-                reorderLevel: p.reorderLevel || 5,
-                sellingPrice: p.sellingPrice,
-                purchasePrice: p.purchasePrice,
-                status: p.stock === 0 ? 'Out of Stock' : p.stock < 3 ? 'Critical' : 'Low Stock',
-                daysInStock: p.createdAt ? Math.floor((Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60 * 24)) : 0,
-            })),
-
-            // Payment Methods (FIXED)
-            paymentMethods: paymentMethodsArray,
-
-            // Metric Cards
             todaySales,
             todayProfit,
             todayOrders,
             monthlySales,
-            totalStockItems,
+            totalStockItems: products.length,
             lowStockCount: lowStockItems.length,
             percentChange,
 
-            // Charts Data
-            rawSales,
-            pendingRepairs: repairData,
-
-            // Additional counts
             totalCustomers,
             totalOrders,
-            hasNewPurchase: false,
+            pendingInstallments,
         });
-
     } catch (error) {
-        console.error('Dashboard API Error:', error);
+        console.error("Dashboard API Error:", error);
+
         return NextResponse.json(
-            { error: 'Failed to fetch dashboard data', message: error.message },
+            {
+                success: false,
+                message:
+                    error instanceof Error
+                        ? error.message
+                        : "Failed to fetch dashboard data.",
+            },
             { status: 500 }
         );
     }
