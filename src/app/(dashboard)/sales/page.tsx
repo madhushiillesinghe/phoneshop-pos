@@ -2694,7 +2694,7 @@ export default function SalesPage() {
                                                         {isAdmin && (
                                                             <Edit2
                                                                 className="w-4 h-4 text-green-600 ml-1"
-                                                                title="Admin can set any price"
+                                                                aria-label="Admin can set any price"
                                                             />
                                                         )}
 
